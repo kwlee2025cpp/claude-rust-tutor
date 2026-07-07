@@ -1,6 +1,6 @@
 # Build + publish the static tutor binary to GHCR as a `FROM scratch` carrier image.
 # Downstream grader Dockerfiles consume via:
-#   COPY --from=ghcr.io/kangwonlee/claude-rust-tutor:vX.Y.Z /claude-rust-tutor /usr/local/bin/
+#   COPY --from=ghcr.io/kwlee2025cpp/claude-rust-tutor:vX.Y.Z /claude-rust-tutor /usr/local/bin/
 
 name: Build & publish tutor binary
 on:
@@ -86,6 +86,6 @@ jobs:
           file: Dockerfile.dist
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/kangwonlee/claude-rust-tutor:${{ github.ref_name }}
-            ghcr.io/kangwonlee/claude-rust-tutor:latest
+            ghcr.io/kwlee2025cpp/claude-rust-tutor:${{ github.ref_name }}
+            ghcr.io/kwlee2025cpp/claude-rust-tutor:latest
           push: true
