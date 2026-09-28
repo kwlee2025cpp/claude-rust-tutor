@@ -14,6 +14,11 @@ pub enum Provider {
     Grok { api_key: String, model: String },
     NvidiaNim { api_key: String, model: String },
     Perplexity { api_key: String, model: String },
+    /// TU Korea AI Gateway (campus credits). OpenAI-compatible wire format.
+    /// `model` is the WIRE id — the `gateway/` selector prefix is stripped in
+    /// `build_provider`, because the Gateway's own catalogue ids are bare
+    /// (`claude-fable-5-1`, `gemini-3.5-flash-lite`).
+    Gateway { api_key: String, model: String },
 }
 
 impl Provider {
@@ -24,6 +29,7 @@ impl Provider {
             Provider::Grok { .. } => "Grok",
             Provider::NvidiaNim { .. } => "NvidiaNIM",
             Provider::Perplexity { .. } => "Perplexity",
+            Provider::Gateway { .. } => "TUKoreaGateway",
         }
     }
 
@@ -38,6 +44,10 @@ impl Provider {
             Provider::Grok { .. } => "https://api.x.ai/v1/chat/completions".into(),
             Provider::NvidiaNim { .. } => "https://integrate.api.nvidia.com/v1/chat/completions".into(),
             Provider::Perplexity { .. } => "https://api.perplexity.ai/chat/completions".into(),
+            // OpenAI-compatible base `…/v1/gateway` + the standard path.
+            Provider::Gateway { .. } => {
+                "https://factchat-cloud.mindlogic.ai/v1/gateway/chat/completions".into()
+            }
         }
     }
 
@@ -53,7 +63,8 @@ impl Provider {
             ],
             Provider::Grok { api_key, .. }
             | Provider::NvidiaNim { api_key, .. }
-            | Provider::Perplexity { api_key, .. } => vec![
+            | Provider::Perplexity { api_key, .. }
+            | Provider::Gateway { api_key, .. } => vec![
                 ("Authorization", format!("Bearer {}", api_key.trim())),
                 ("Content-Type", "application/json".into()),
             ],
@@ -93,6 +104,17 @@ impl Provider {
                     "stream": false,
                 })
             }
+            // Deliberately minimal: `model`/`messages`/`temperature`/
+            // `max_tokens`/`stream` only. The Gateway fronts many vendors, so
+            // every extra knob is another chance at a 400 from whichever
+            // backend the id resolves to. `max_tokens` is the credit guard.
+            Provider::Gateway { model, .. } => json!({
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.2,
+                "max_tokens": 1024,
+                "stream": false,
+            }),
             Provider::Perplexity { model, .. } => {
                 let max_tokens = 384;
                 let half = max_tokens / 2;
@@ -140,7 +162,8 @@ impl Provider {
                 .ok_or_else(|| anyhow::anyhow!("claude: missing content[0].text")),
             Provider::Grok { .. }
             | Provider::NvidiaNim { .. }
-            | Provider::Perplexity { .. } => response
+            | Provider::Perplexity { .. }
+            | Provider::Gateway { .. } => response
                 .pointer("/choices/0/message/content")
                 .and_then(Value::as_str)
                 .map(str::to_string)
@@ -162,6 +185,7 @@ impl Provider {
 /// key-order fallback below still reaches NvidiaNIM, so this is sufficient.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderKind {
+    Gateway,
     Gemini,
     Claude,
     Grok,
@@ -169,10 +193,20 @@ enum ProviderKind {
     Perplexity,
 }
 
+pub(crate) const GATEWAY_PREFIX: &str = "gateway/";
+
 fn provider_kind_for_model(model: &str) -> Option<ProviderKind> {
-    // Order is irrelevant: the prefixes are mutually exclusive.
+    // Order matters HERE and nowhere else in this function: the Gateway's
+    // catalogue ids ARE vendor ids (`claude-fable-5-1`, `gemini-3.5-flash-lite`),
+    // so `gateway/` must be tested first. Without the selector prefix a
+    // Gateway id matches the vendor arm and the call leaves for the vendor's
+    // PUBLIC api on the vendor's key — billed to the wrong account, silently.
+    // The prefix is the only thing that distinguishes "this id, via campus
+    // credits" from "this id, via the vendor".
     let m = model.trim().to_ascii_lowercase();
-    if m.starts_with("gemini") {
+    if m.starts_with(GATEWAY_PREFIX) {
+        Some(ProviderKind::Gateway)
+    } else if m.starts_with("gemini") {
         Some(ProviderKind::Gemini)
     } else if m.starts_with("claude") {
         Some(ProviderKind::Claude)
@@ -190,6 +224,23 @@ fn provider_kind_for_model(model: &str) -> Option<ProviderKind> {
 /// Build the chosen provider, reading its matching `INPUT_<provider>_API_KEY`.
 fn build_provider(kind: ProviderKind, model: String) -> anyhow::Result<Provider> {
     let p = match kind {
+        ProviderKind::Gateway => {
+            // Strip by LENGTH off the original string, not the lowercased
+            // copy, so the wire id keeps its case. The prefix matched
+            // case-insensitively above, hence the length is known-good.
+            let wire = model[GATEWAY_PREFIX.len()..].trim().to_string();
+            if wire.is_empty() {
+                anyhow::bail!(
+                    "INPUT_MODEL='{model}' has the '{GATEWAY_PREFIX}' selector but no model id \
+                     after it; use e.g. INPUT_MODEL={GATEWAY_PREFIX}claude-fable-5-1 \
+                     (ids come from GET /v1/gateway/models/)"
+                );
+            }
+            Provider::Gateway {
+                api_key: require_key("INPUT_TUKOREA_GATEWAY_API_KEY", "TUKoreaGateway")?,
+                model: wire,
+            }
+        }
         ProviderKind::Gemini => Provider::Gemini {
             api_key: require_key("INPUT_GEMINI_API_KEY", "Gemini")?,
             model,
@@ -240,7 +291,7 @@ pub fn select_from_env() -> anyhow::Result<Provider> {
             Some(kind) => return build_provider(kind, model.trim().to_string()),
             None => anyhow::bail!(
                 "INPUT_MODEL='{model}' does not match any known provider prefix \
-                 (gemini|claude|grok|nvidia|sonar)"
+                 (gateway/|gemini|claude|grok|nvidia|sonar)"
             ),
         }
     }
@@ -262,6 +313,13 @@ pub fn select_from_env() -> anyhow::Result<Provider> {
     if let Some(key) = nonempty("INPUT_PERPLEXITY_API_KEY") {
         return Ok(Provider::Perplexity { api_key: key, model: "sonar".into() });
     }
+    if nonempty("INPUT_TUKOREA_GATEWAY_API_KEY").is_some() {
+        anyhow::bail!(
+            "INPUT_TUKOREA_GATEWAY_API_KEY is set but INPUT_MODEL is empty. The Gateway \
+             fronts many vendors and has no default model, so the id must be explicit: \
+             set INPUT_MODEL={GATEWAY_PREFIX}<id> (ids from GET /v1/gateway/models/)"
+        )
+    }
     anyhow::bail!("no LLM API key set in env (INPUT_*_API_KEY)")
 }
 
@@ -281,6 +339,18 @@ fn require_key(name: &str, provider: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every env var the gateway tests touch — cleared before and after each
+    /// so a key leaking from the runner env cannot change a verdict.
+    const GATEWAY_TEST_VARS: [&str; 7] = [
+        "INPUT_GEMINI_API_KEY",
+        "INPUT_CLAUDE_API_KEY",
+        "INPUT_GROK_API_KEY",
+        "INPUT_NVIDIA_API_KEY",
+        "INPUT_PERPLEXITY_API_KEY",
+        "INPUT_TUKOREA_GATEWAY_API_KEY",
+        "INPUT_MODEL",
+    ];
 
     #[test]
     fn gemini_url_embeds_key_and_model() {
@@ -456,5 +526,115 @@ mod tests {
                 env::remove_var(k);
             }
         }
+    }
+
+    // ---- TU Korea Gateway (v0.2) ------------------------------------------
+
+    // THE trap this provider exists to close: the Gateway's catalogue ids are
+    // vendor ids. Without the selector prefix they match the vendor arm and
+    // the call leaves for the vendor's public API on the vendor's key.
+    #[test]
+    fn gateway_prefix_wins_and_bare_ids_still_go_to_the_vendor() {
+        assert_eq!(provider_kind_for_model("gateway/claude-fable-5-1"), Some(ProviderKind::Gateway));
+        assert_eq!(provider_kind_for_model("gateway/gemini-3.5-flash-lite"), Some(ProviderKind::Gateway));
+        assert_eq!(provider_kind_for_model("  GATEWAY/Claude-Fable-5  "), Some(ProviderKind::Gateway));
+        // Bare Gateway ids: documented, deliberate, and NOT the Gateway.
+        assert_eq!(provider_kind_for_model("claude-fable-5-1"), Some(ProviderKind::Claude));
+        assert_eq!(provider_kind_for_model("gemini-3.5-flash-lite"), Some(ProviderKind::Gemini));
+    }
+
+    #[test]
+    fn gateway_url_is_openai_compatible_path() {
+        let p = Provider::Gateway { api_key: "K".into(), model: "claude-fable-5-1".into() };
+        assert_eq!(p.api_url(), "https://factchat-cloud.mindlogic.ai/v1/gateway/chat/completions");
+    }
+
+    #[test]
+    fn gateway_headers_carry_bearer() {
+        let p = Provider::Gateway { api_key: "  K\n".into(), model: "m".into() };
+        let hs = p.headers();
+        assert!(hs.iter().any(|(k, v)| *k == "Authorization" && v == "Bearer K"));
+        assert!(hs.iter().any(|(k, v)| *k == "Content-Type" && v == "application/json"));
+    }
+
+    #[test]
+    fn gateway_body_is_minimal_and_capped() {
+        let p = Provider::Gateway { api_key: "K".into(), model: "claude-fable-5-1".into() };
+        let b = p.body("hi");
+        assert_eq!(b["model"], "claude-fable-5-1");
+        assert_eq!(b["messages"][0]["content"], "hi");
+        assert_eq!(b["max_tokens"], 1024);
+        assert_eq!(b["stream"], false);
+        // No top_p: one less knob for a fronted backend to reject.
+        assert!(b.get("top_p").is_none(), "body should stay minimal: {b}");
+    }
+
+    #[test]
+    fn gateway_parses_choices_content() {
+        let p = Provider::Gateway { api_key: "K".into(), model: "m".into() };
+        let r = serde_json::json!({"choices": [{"message": {"content": "ok"}}]});
+        assert_eq!(p.parse(&r).unwrap(), "ok");
+    }
+
+    // The selector prefix must never reach the wire: the Gateway knows
+    // `claude-fable-5-1`, not `gateway/claude-fable-5-1`. Case is preserved.
+    #[test]
+    fn gateway_strips_selector_prefix_from_wire_id() {
+        unsafe {
+            for k in GATEWAY_TEST_VARS { env::remove_var(k); }
+            env::set_var("INPUT_TUKOREA_GATEWAY_API_KEY", "gw-key");
+            env::set_var("INPUT_MODEL", "gateway/Claude-Fable-5-1");
+        }
+        let p = select_from_env().expect("gateway/ id + gateway key should resolve");
+        match p {
+            Provider::Gateway { api_key, model } => {
+                assert_eq!(api_key, "gw-key");
+                assert_eq!(model, "Claude-Fable-5-1", "selector prefix must be stripped");
+            }
+            other => panic!("expected Gateway provider, got {other:?}"),
+        }
+        unsafe { for k in GATEWAY_TEST_VARS { env::remove_var(k); } }
+    }
+
+    // A gateway key with no INPUT_MODEL used to fall through to a vendor key
+    // (or to the generic "no key" error). It must say what is actually wrong.
+    #[test]
+    fn gateway_key_without_input_model_errors_clearly() {
+        unsafe {
+            for k in GATEWAY_TEST_VARS { env::remove_var(k); }
+            env::set_var("INPUT_TUKOREA_GATEWAY_API_KEY", "gw-key");
+        }
+        let e = select_from_env().expect_err("gateway key without INPUT_MODEL must error");
+        let msg = e.to_string();
+        assert!(msg.contains("INPUT_MODEL"), "error should name INPUT_MODEL: {msg}");
+        assert!(msg.contains("gateway/"), "error should show the selector: {msg}");
+        unsafe { for k in GATEWAY_TEST_VARS { env::remove_var(k); } }
+    }
+
+    #[test]
+    fn gateway_selector_without_an_id_errors() {
+        unsafe {
+            for k in GATEWAY_TEST_VARS { env::remove_var(k); }
+            env::set_var("INPUT_TUKOREA_GATEWAY_API_KEY", "gw-key");
+            env::set_var("INPUT_MODEL", "gateway/");
+        }
+        assert!(select_from_env().is_err(), "bare 'gateway/' must error");
+        unsafe { for k in GATEWAY_TEST_VARS { env::remove_var(k); } }
+    }
+
+    #[test]
+    fn gateway_model_without_its_key_errors() {
+        unsafe {
+            for k in GATEWAY_TEST_VARS { env::remove_var(k); }
+            // A vendor key is present; it must NOT be used for a gateway/ id.
+            env::set_var("INPUT_CLAUDE_API_KEY", "claude-key");
+            env::set_var("INPUT_MODEL", "gateway/claude-fable-5-1");
+        }
+        let e = select_from_env().expect_err("gateway id without gateway key must error");
+        assert!(
+            e.to_string().contains("INPUT_TUKOREA_GATEWAY_API_KEY"),
+            "error should name the gateway key: {e}"
+        );
+        unsafe { for k in GATEWAY_TEST_VARS { env::remove_var(k); } }
     }
 }

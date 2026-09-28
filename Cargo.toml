@@ -1,11 +1,11 @@
 [package]
 name = "claude-rust-tutor"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Multi-provider LLM-based coding tutor. Rust port of kangwonlee/gemini-python-tutor — reads test JSON + student code + README, calls an LLM, prints feedback."
 license = "BSD-3-Clause"
-repository = "https://github.com/kangwonlee/claude-rust-tutor"
+repository = "https://github.com/kwlee2025cpp/claude-rust-tutor"
 authors = ["Kangwon Lee"]
 publish = false
 
