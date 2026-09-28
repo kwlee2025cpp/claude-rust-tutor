@@ -2,7 +2,7 @@
 
 Multi-provider LLM-based coding tutor in Rust. Port of [`kangwonlee/gemini-python-tutor`](https://github.com/kangwonlee/gemini-python-tutor), naming follows the convention "primary contributing LLM + impl language + tutor."
 
-**Status:** v0.1.0 shipped 2026-05-23 — `ghcr.io/kangwonlee/claude-rust-tutor:v0.1.0` (multi-arch, ~2.17 MB amd64). Full prompt builder + 5-provider HTTP client + 19 unit tests. Smoke test against a real LLM API key still pending.
+**Status:** v0.1.4 is the deployed tag — `ghcr.io/kwlee2025cpp/claude-rust-tutor:v0.1.4` (multi-arch static binary in a `FROM scratch` carrier). Verified end to end on the grading pipeline 2026-07-15. v0.2 adds the TU Korea AI Gateway provider (campus credits); it is not yet pinned by any grader.
 
 ## Role
 
@@ -15,10 +15,10 @@ Drop-in feedback generator for autograded assignments. Reads:
 
 ## Distribution model
 
-Published as a multi-arch static binary inside a `FROM scratch` carrier image at `ghcr.io/kangwonlee/claude-rust-tutor:vX.Y.Z`. Downstream grader images consume it with a multi-stage `COPY`:
+Published as a multi-arch static binary inside a `FROM scratch` carrier image at `ghcr.io/kwlee2025cpp/claude-rust-tutor:vX.Y.Z`. Downstream grader images consume it with a multi-stage `COPY`:
 
 ```dockerfile
-COPY --from=ghcr.io/kangwonlee/claude-rust-tutor:vX.Y.Z /claude-rust-tutor /usr/local/bin/
+COPY --from=ghcr.io/kwlee2025cpp/claude-rust-tutor:vX.Y.Z /claude-rust-tutor /usr/local/bin/
 ```
 
 No python runtime needed in the grader image.
@@ -34,6 +34,24 @@ Same five providers as `gemini-python-tutor`, default order picks whichever API 
 | Grok | `INPUT_GROK_API_KEY` | `grok-code-fast` |
 | NVIDIA NIM | `INPUT_NVIDIA_API_KEY` | `google/gemma-2-9b-it` |
 | Perplexity | `INPUT_PERPLEXITY_API_KEY` | `sonar` |
+| TU Korea AI Gateway | `INPUT_TUKOREA_GATEWAY_API_KEY` | none — `INPUT_MODEL` is required |
+
+### Selecting the Gateway (v0.2)
+
+The provider is chosen from `INPUT_MODEL` by prefix. The Gateway fronts many
+vendors and **its catalogue ids are the vendors' own ids**, so it needs an
+explicit selector:
+
+```
+INPUT_MODEL=gateway/claude-fable-5-1     ->  TU Korea Gateway, campus credits
+INPUT_MODEL=claude-fable-5-1             ->  Anthropic's PUBLIC api, your Anthropic key
+```
+
+Both are valid; they bill different accounts. The `gateway/` prefix is stripped
+before the request — the Gateway is sent the bare id. Model ids come from
+`GET https://factchat-cloud.mindlogic.ai/v1/gateway/models/`; there is no
+default, so a Gateway key with an empty `INPUT_MODEL` is an error rather than a
+guess.
 
 ## Env var contract
 
@@ -45,7 +63,7 @@ Same five providers as `gemini-python-tutor`, default order picks whichever API 
 | `INPUT_EXPLANATION_IN` | Locale name (e.g. `Korean`, `English`) |
 | `INPUT_MODEL` | Optional model override |
 | `INPUT_FAIL_EXPECTED` | `true` to assert failures expected (default `false`) |
-| `INPUT_<PROVIDER>_API_KEY` | API key for the chosen provider |
+| `INPUT_<PROVIDER>_API_KEY` | API key for the chosen provider (Gateway: `INPUT_TUKOREA_GATEWAY_API_KEY`) |
 
 > **Names use underscores, not hyphens.** The Python tutor
 > (`gemini-python-tutor`) runs as a GitHub composite *action*, so GitHub
