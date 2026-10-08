@@ -108,11 +108,30 @@ impl Provider {
             // `max_tokens`/`stream` only. The Gateway fronts many vendors, so
             // every extra knob is another chance at a 400 from whichever
             // backend the id resolves to. `max_tokens` is the credit guard.
+            //
+            // `reasoning_effort: "none"` is the ONE exception, and it is not a
+            // tuning knob -- without it this provider silently delivers almost
+            // nothing. `max_tokens` caps reasoning AND visible output together,
+            // so a model that thinks by default spends the budget before it
+            // speaks: measured on gemini-3.5-flash through this Gateway
+            // (grader-hub run 36992477165, 2026-10-02), a real 0/5 prompt came
+            // back with 41 visible tokens of a cut-off answer and ~980 of the
+            // 1024 spent on hidden reasoning. The same prompt with this field
+            // returned 720 visible tokens -- a complete answer -- and cost LESS
+            // (18.09 vs 20.79 credits), because reasoning bills at the output
+            // rate too. Every student reply between 2026-09-30 00:58 and
+            // 2026-10-02 19:11 KST was truncated this way. Sent unconditionally
+            // rather than gated on a model family: it is part of the
+            // OpenAI-compatible schema the Gateway speaks, a backend that does
+            // not reason has nothing to do with it, and a family allow-list
+            // would have to be edited for every new id in a 59-model catalogue
+            // -- the failure it prevents is silent, so the default must be safe.
             Provider::Gateway { model, .. } => json!({
                 "model": model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.2,
                 "max_tokens": 1024,
+                "reasoning_effort": "none",
                 "stream": false,
             }),
             Provider::Perplexity { model, .. } => {
@@ -567,6 +586,31 @@ mod tests {
         assert_eq!(b["stream"], false);
         // No top_p: one less knob for a fronted backend to reject.
         assert!(b.get("top_p").is_none(), "body should stay minimal: {b}");
+    }
+
+    // The one field that is NOT optional. `max_tokens` caps hidden reasoning
+    // and visible output together, so without this a reasoning model answers
+    // the student in ~40 tokens and the rest of the budget is spent thinking
+    // (measured 2026-10-02: 41 visible tokens vs 720 with the field, at a
+    // HIGHER cost). The failure is silent -- a 200, a plausible opening
+    // sentence, no error anywhere -- so it is asserted for every Gateway
+    // model, not just the family it was measured on.
+    #[test]
+    fn gateway_body_disables_hidden_reasoning_for_every_model() {
+        for id in [
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "claude-fable-5-1",
+            "claude-haiku-4-5-20251001",
+            "some-future-id",
+        ] {
+            let p = Provider::Gateway { api_key: "K".into(), model: id.into() };
+            let b = p.body("hi");
+            assert_eq!(
+                b["reasoning_effort"], "none",
+                "{id}: without reasoning_effort=none the reply is truncated to ~40 tokens: {b}"
+            );
+        }
     }
 
     #[test]
