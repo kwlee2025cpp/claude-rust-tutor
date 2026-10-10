@@ -2,7 +2,7 @@
 
 Multi-provider LLM-based coding tutor in Rust. Port of [`kangwonlee/gemini-python-tutor`](https://github.com/kangwonlee/gemini-python-tutor), naming follows the convention "primary contributing LLM + impl language + tutor."
 
-**Status:** v0.1.4 is the deployed tag — `ghcr.io/kwlee2025cpp/claude-rust-tutor:v0.1.4` (multi-arch static binary in a `FROM scratch` carrier). Verified end to end on the grading pipeline 2026-07-15. v0.2 adds the TU Korea AI Gateway provider (campus credits); it is not yet pinned by any grader.
+**Status (2026-10-11):** v0.2.1 is the deployed tag - `ghcr.io/kwlee2025cpp/claude-rust-tutor:v0.2.1` (multi-arch static binary in a `FROM scratch` carrier). Verified end to end on the grading pipeline (v0.1.4 on 2026-07-15, v0.2.1 on 2026-10-10). v0.2 added the TU Korea AI Gateway provider (campus credits); use v0.2.1 or later, which fixes Gateway replies being cut short by hidden reasoning.
 
 ## Role
 
